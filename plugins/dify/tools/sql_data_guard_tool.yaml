@@ -3,15 +3,11 @@ identity:
   author: imperva
   label:
     en_US: Verify SQL
-  description:
-    en_US: Verifies SQL queries against a policy configuration
-  icon: icon.png
-
 
 description:
   human:
-    en_US: Verify SQL queries against a policy configuration
-  llm: Verify SQL queries against a policy configuration
+    en_US: Verifies SQL queries against a policy configuration
+  llm: Verifies SQL queries against a policy configuration
 
 parameters:
   - name: sql
