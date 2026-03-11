@@ -36,7 +36,7 @@ parameters:
     label:
       en_US: SQL Dialect
     human_description:
-      en_US: "111 SQL dialect (e.g., MySQL, PostgreSQL)"
+      en_US: "SQL dialect (e.g., MySQL, PostgreSQL)"
     llm_description: "SQL dialect (e.g., MySQL, PostgreSQL)"
     form: form
     options:
