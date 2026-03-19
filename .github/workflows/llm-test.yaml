@@ -19,7 +19,7 @@ jobs:
       - name: Install test dependencies
         run: |
           source .venv/bin/activate
-          pip install -r test/test.requirements.txt
+          python -m pip install -r test/test.requirements.txt
 
       - name: Get AWS Permissions
         uses: aws-actions/configure-aws-credentials@v2
@@ -31,3 +31,4 @@ jobs:
         run: |
           source .venv/bin/activate
           PYTHONPATH=src python -m pytest --color=yes test/test_sql_guard_llm.py
+        shell: bash
