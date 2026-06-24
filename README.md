@@ -12,6 +12,9 @@
   <a href="LICENSE.md"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
 </p>
 
+> [!TIP]
+> 🚀 **New to sql-data-guard? Start here → [ONBOARDING.md](ONBOARDING.md)** — a colorful, step-by-step quick guide that gets you installed, runs your first guarded query, and points you to the right integration path in **under 5 minutes**.
+
 ---
 
 ## Table of contents
