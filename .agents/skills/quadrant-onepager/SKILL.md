@@ -245,75 +245,89 @@ Replace the `{{PLACEHOLDERS}}`; keep one `<li>` per bullet; delete unused `<li>`
 
 ---
 
-## 7. Output method B — editable PPTX (python-pptx)
+## 7. Output method B — editable PPTX by cloning the template (PREFERRED for PPT)
 
-Use when the client needs to edit text in PowerPoint. Requires `pip install python-pptx`.
-Fill the `CONTENT` dict; run the script; it writes `one-pager.pptx`.
+When the client needs a **native, editable PowerPoint**, do **not** rebuild the design from
+scratch — **clone the bundled template and replace only the text.** This guarantees pixel-perfect
+fidelity (rounded cards, hero border, fonts, colours, bullet glyphs all preserved automatically).
+
+- **Template file:** `template.pptx`, shipped next to this `SKILL.md`. It contains one 16:9
+  slide: a header textbox + a group of four quadrant textboxes (titles
+  `Problem & opportunity`, `Hypothesis`, `Use cases and results`, `Value & Impact`).
+- **Requires:** `pip install python-pptx`.
+- **How it works:** the script walks the shape tree (recursing into groups), matches each
+  quadrant textbox by its **title paragraph**, keeps the title + any spacer, and clones the
+  first bullet paragraph for each new bullet (so styling is inherited, not re-specified).
+
+Edit `DECK_TITLE`, `DECK_SUBTITLE`, and the `QUADRANTS` dict, then run it. It writes
+`one-pager.pptx` and never touches the template.
 
 ```python
+from copy import deepcopy
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.oxml.ns import qn
 
-# ---- edit this ----
-DECK_TITLE = "A4I Hackathon"
-DECK_SUBTITLE = "4-quadrant template"
-CONTENT = {
-    "Problem & opportunity": ["Problem to solve", "Why does it matter (impacts, stakes)"],
-    "Hypothesis": ["Hypothesis on coding assistants", "How AI was used (prompts, features, workflows)",
-                   "Engineering best practices applied", "Mandatory: skills / framework / tools"],
-    "Use cases and results": ["Key use cases delivered", "Measurable outcomes (code quality, coverage)"],
-    "Value & Impact": ["Business value generated", "Reusability potential", "Next steps for scaling"],
+TEMPLATE = "template.pptx"   # ships beside this SKILL.md
+OUTPUT = "one-pager.pptx"
+
+# ---- edit this block ----
+DECK_TITLE = "Your project name"
+DECK_SUBTITLE = "Event / one-line subtitle"
+QUADRANTS = {                       # keys MUST match the template's quadrant titles
+    "Problem & opportunity": ["…", "…"],
+    "Hypothesis": ["…", "…", "…"],
+    "Use cases and results": ["…", "…"],
+    "Value & Impact": ["…", "…", "…"],
 }
-HERO = "Value & Impact"   # quadrant that gets the bright border
-# -------------------
+# -------------------------
 
-PAGE_BG=RGBColor(0x23,0x28,0x39); CARD_BG=RGBColor(0x06,0x18,0x2a)
-BORDER=RGBColor(0x1f,0x5d,0x78); HERO_BORDER=RGBColor(0xe8,0xee,0xf5)
-TITLE=RGBColor(0xff,0xff,0xff); SUB=RGBColor(0xc7,0xce,0xdb)
-BODY=RGBColor(0xcf,0xd9,0xe6); BULLET=RGBColor(0x4f,0x9f,0xd6)
+def para_text(p): return "".join(r.text for r in p.runs)
 
-prs=Presentation(); prs.slide_width=Inches(13.333); prs.slide_height=Inches(7.5)
-s=prs.slides.add_slide(prs.slide_layouts[6])
-bg=s.background.fill; bg.solid(); bg.fore_color.rgb=PAGE_BG
+def set_para_text(p_el, text):
+    runs = p_el.findall(qn("a:r"))
+    runs[0].find(qn("a:t")).text = text
+    for extra in runs[1:]: p_el.remove(extra)   # keep first run's formatting only
 
-def textbox(l,t,w,h,text,size,color,bold=False,italic=False,align=PP_ALIGN.LEFT):
-    tb=s.shapes.add_textbox(Inches(l),Inches(t),Inches(w),Inches(h)); tf=tb.text_frame
-    tf.word_wrap=True; p=tf.paragraphs[0]; p.alignment=align; r=p.add_run(); r.text=text
-    f=r.font; f.size=Pt(size); f.color.rgb=color; f.bold=bold; f.italic=italic; return tb
+def fill_textbox(tf, bullets):
+    txBody, paras = tf._txBody, tf.paragraphs
+    tmpl = next((p._p for p in paras[1:] if para_text(p).strip()), None)
+    if tmpl is None: return
+    for p in paras[1:]:                          # drop old bullets, keep title + spacers
+        if para_text(p).strip(): txBody.remove(p._p)
+    for b in bullets:                            # clone styled bullet for each new line
+        newp = deepcopy(tmpl); set_para_text(newp, b); txBody.append(newp)
 
-# header
-textbox(0.5,0.25,12.3,0.8,DECK_TITLE,32,TITLE,bold=True)
-textbox(0.52,1.0,12.3,0.5,DECK_SUBTITLE,18,SUB,italic=True)
+def walk(shapes):
+    for sh in shapes:
+        if sh.shape_type == 6: yield from walk(sh.shapes)   # 6 = group
+        elif sh.has_text_frame: yield sh
 
-# 2x2 grid geometry (inches)
-positions={0:(0.5,1.75),1:(6.92,1.75),2:(0.5,4.55),3:(6.92,4.55)}
-CW,CH=5.9,2.6
-for i,(title,bullets) in enumerate(CONTENT.items()):
-    l,t=positions[i]
-    card=s.shapes.add_shape(1,Inches(l),Inches(t),Inches(CW),Inches(CH))  # 1=rounded rect
-    card.fill.solid(); card.fill.fore_color.rgb=CARD_BG
-    card.line.color.rgb=HERO_BORDER if title==HERO else BORDER
-    card.line.width=Pt(2.5 if title==HERO else 1.5)
-    card.shadow.inherit=False
-    # title
-    tt=card.text_frame; tt.word_wrap=True; tt.vertical_anchor=MSO_ANCHOR.TOP
-    p=tt.paragraphs[0]; p.alignment=PP_ALIGN.CENTER; r=p.add_run(); r.text=title
-    r.font.size=Pt(20); r.font.bold=True; r.font.color.rgb=TITLE
-    # bullets
-    bb=textbox(l+0.25,t+0.7,CW-0.5,CH-0.85,"",18,BODY).text_frame
-    for j,b in enumerate(bullets):
-        para=bb.paragraphs[0] if j==0 else bb.add_paragraph()
-        run=para.add_run(); run.text="•  "+b
-        run.font.size=Pt(15); run.font.color.rgb=BODY; para.space_after=Pt(6)
+def set_header(tf):
+    runs = [r for p in tf.paragraphs for r in p.runs]
+    if runs:
+        runs[0].text = DECK_TITLE
+        if len(runs) > 1: runs[-1].text = DECK_SUBTITLE
 
-prs.save("one-pager.pptx")
-print("✅ wrote one-pager.pptx")
+prs = Presentation(TEMPLATE)
+for sh in walk(prs.slides[0].shapes):
+    head = para_text(sh.text_frame.paragraphs[0]).strip()
+    if head in QUADRANTS: fill_textbox(sh.text_frame, QUADRANTS[head])
+    elif head.startswith("A4I Hackathon"): set_header(sh.text_frame)
+prs.save(OUTPUT); print("OK wrote", OUTPUT)
 ```
 
-> Method A (HTML) is the better visual match to the reference. Method B trades a little
-> fidelity for native editability — choose per client need.
+> **Why cloning beats building:** the A4I template uses a grouped layout, custom rounded-corner
+> shapes, and a specific font/colour theme that are tedious and error-prone to recreate with
+> `add_shape`. Cloning inherits all of it for free — you only ever touch text.
+>
+> **No template file?** (e.g. a different client deck) Fall back to building from scratch with
+> the design tokens in §3 — but prefer obtaining the real `.pptx` and cloning it.
+
+### Previewing a `.pptx`
+
+`python-pptx` can't render images. To eyeball the result, open it in PowerPoint, or convert
+with LibreOffice if available: `soffice --headless --convert-to png one-pager.pptx`. Otherwise
+rely on Method A's HTML/PNG (§6) as the visual proof and ship the `.pptx` for editing.
 
 ---
 
