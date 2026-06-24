@@ -57,4 +57,3 @@ Use this skill when:
 
 - Positive Tests
 - Negative Tests
-- Regression Tests-sta-console-nakul.

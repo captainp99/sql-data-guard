@@ -6,10 +6,17 @@ import sqlglot.expressions as expr
 from sqlglot.optimizer.simplify import simplify
 
 from .column_masking import build_mask_expression, validate_column_masks
+from .injection_detection import (
+    function_name,
+    is_stacked_statement,
+    scan_parsed_sql,
+    scan_raw_sql,
+)
 from .restriction_validation import validate_restrictions, UnsupportedRestrictionError
 from .restriction_verification import verify_restrictions
 from .verification_context import VerificationContext
 from .verification_utils import split_to_expressions, find_direct
+
 
 _DEFAULT_MAX_LENGTH = 10_000
 
@@ -59,6 +66,8 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
         return {"allowed": False, "errors": [str(e)], "fixed": None, "risk": 1.0}
 
     result = VerificationContext(config, dialect)
+    # Pre-parse scan for attacks invisible to the AST (e.g. comment evasion).
+    scan_raw_sql(sql, result)
     try:
         parsed = sqlglot.parse_one(sql, dialect=dialect)
     except sqlglot.errors.ParseError as e:
@@ -66,6 +75,11 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
         result.add_error(f"Error parsing sql: {e}", False, 0.9)
         parsed = None
     if parsed:
+        # AST-based malicious-payload scan (stacked queries, dangerous
+        # functions, system-catalog probing). Always on.
+        scan_parsed_sql(parsed, result)
+        # Config-driven function allow-list / deny-list (feature F2).
+        _verify_functions(parsed, result)
         if isinstance(parsed, expr.Command):
             result.add_error(f"{parsed.name} statement is not allowed", False, 0.9)
         elif isinstance(parsed, (expr.Delete, expr.Insert, expr.Update, expr.Create)):
@@ -74,8 +88,15 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
             )
         elif isinstance(parsed, expr.Query):
             _verify_query_statement(parsed, result)
+        elif is_stacked_statement(parsed):
+            # Stacked statements are already reported by scan_parsed_sql with an
+            # intent-revealing message; avoid the misleading generic error.
+            pass
         else:
             result.add_error("Could not find a query statement", False, 0.7)
+
+    if parsed is not None and isinstance(parsed, expr.Query) and result.can_fix:
+        _enforce_force_limit(parsed, result)
     if result.can_fix and len(result.errors) > 0:
         result.fixed = parsed.sql(dialect=dialect)
     return {
@@ -84,6 +105,76 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
         "fixed": result.fixed,
         "risk": result.risk,
     }
+
+
+def _verify_functions(parsed: expr.Expression, context: VerificationContext):
+    """Enforce a config-driven function allow-list / deny-list (feature F2).
+
+    Two optional, top-level config keys (function names are matched
+    case-insensitively):
+
+    * ``blocked_functions`` -- any call to one of these functions is blocked.
+    * ``allowed_functions`` -- if present, *only* these functions may be called;
+      any other function is blocked.
+
+    A violation is a hard block (not auto-fixable): stripping a function call
+    from an arbitrary position could silently change query semantics or produce
+    invalid SQL, so the query is rejected outright. This composes with the
+    always-on dangerous-function deny-list in :mod:`injection_detection`.
+    """
+    blocked = context.config.get("blocked_functions")
+    allowed = context.config.get("allowed_functions")
+    if not blocked and not allowed:
+        return
+    blocked_lower = {f.lower() for f in blocked} if blocked else set()
+    allowed_lower = {f.lower() for f in allowed} if allowed else None
+    for func in parsed.find_all(expr.Func):
+        name = function_name(func)
+        if not name:
+            continue
+        lname = name.lower()
+        if lname in blocked_lower:
+            context.add_error(f"Function {name} is not allowed", False, 0.9)
+        elif allowed_lower is not None and lname not in allowed_lower:
+            context.add_error(
+                f"Function {name} is not in the allowed functions list",
+                False,
+                0.9,
+            )
+
+
+def _enforce_force_limit(parsed: expr.Query, context: VerificationContext):
+    """Enforce a mandatory row cap on the outermost query (feature F3).
+
+    If the config sets ``force_limit`` to a positive integer, the outermost
+    query must not return more rows than that cap:
+
+    * No ``LIMIT`` present -> inject ``LIMIT force_limit``.
+    * ``LIMIT`` larger than the cap -> clamp it down to ``force_limit``.
+    * ``LIMIT`` at or below the cap -> left unchanged.
+
+    Only the outermost statement is touched (sub-queries/CTEs are not), because
+    the cap protects the final result set returned to the caller. The rewrite is
+    fixable, so it surfaces in the ``fixed`` query just like other auto-fixes.
+    """
+    force_limit = context.config.get("force_limit")
+    if not isinstance(force_limit, int) or isinstance(force_limit, bool):
+        return
+    if force_limit <= 0:
+        return
+    limit = parsed.args.get("limit")
+    if limit is not None:
+        try:
+            current = int(limit.expression.name)
+        except (AttributeError, ValueError, TypeError):
+            current = None
+        if current is not None and current <= force_limit:
+            return
+        action = f"clamped from {current} to" if current is not None else "set to"
+    else:
+        action = "set to"
+    parsed.set("limit", expr.Limit(expression=expr.Literal.number(force_limit)))
+    context.add_error(f"Row limit enforced: LIMIT {action} {force_limit}", True, 0.3)
 
 
 def _verify_where_clause(
@@ -198,19 +289,17 @@ def _verify_select_clause(
 def _verify_select_clause_element(
     from_tables: List[expr.Table], context: VerificationContext, e: expr.Expression
 ):
-    if isinstance(e, expr.Column):
+    if isinstance(e, expr.Column) and e.name == "*":
+        # Table-qualified wildcard (``t.*``) -- expand like ``*`` but scoped to
+        # the named table (feature F10).
+        _expand_star(e, from_tables, context, table_filter=e.table)
+        return False
+    elif isinstance(e, expr.Column):
         if not _verify_col(e, from_tables, context):
             return False
         _apply_column_mask(e, from_tables, context)
     elif isinstance(e, expr.Star):
-        context.add_error("SELECT * is not allowed", True, 0.1)
-        for t in from_tables:
-            for config_t in context.config["tables"]:
-                if t.name == config_t["table_name"]:
-                    for c in config_t["columns"]:
-                        e.parent.set(
-                            "expressions", e.parent.expressions + [sqlglot.parse_one(c)]
-                        )
+        _expand_star(e, from_tables, context)
         return False
     elif isinstance(e, expr.Tuple):
         result = True
@@ -223,6 +312,45 @@ def _verify_select_clause_element(
             if not _verify_select_clause_element(from_tables, context, func_args):
                 return False
     return True
+
+
+def _expand_star(
+    e: expr.Expression,
+    from_tables: List[expr.Table],
+    context: VerificationContext,
+    table_filter: str = "",
+):
+    """Replace a ``*`` / ``table.*`` wildcard with the allowed column list.
+
+    Columns listed in a table's ``denied_columns`` are excluded from the
+    expansion (feature F10), so ``SELECT *`` never silently surfaces a denied
+    column. ``table_filter`` restricts expansion to a single table for the
+    qualified ``table.*`` form.
+    """
+    context.add_error("SELECT * is not allowed", True, 0.1)
+    for t in from_tables:
+        if table_filter and table_filter not in (t.name, t.alias):
+            continue
+        for config_t in context.config["tables"]:
+            if t.name == config_t["table_name"]:
+                denied = set(config_t.get("denied_columns", []))
+                for c in config_t["columns"]:
+                    if c in denied:
+                        continue
+                    e.parent.set(
+                        "expressions", e.parent.expressions + [sqlglot.parse_one(c)]
+                    )
+
+
+def _denied_columns(
+    from_tables: List[expr.Table], context: VerificationContext
+) -> set:
+    """Union of ``denied_columns`` across the config tables in this query."""
+    denied = set()
+    for config_t in context.config["tables"]:
+        if any(t.name == config_t["table_name"] for t in from_tables):
+            denied.update(config_t.get("denied_columns", []))
+    return denied
 
 
 def _verify_col(
@@ -239,6 +367,15 @@ def _verify_col(
     Returns:
         bool: True if the column reference is allowed, False otherwise.
     """
+    # A denied column (feature F10) is rejected even if it is otherwise
+    # allow-listed: deny wins, and the column is stripped from the SELECT.
+    if col.name in _denied_columns(from_tables, context):
+        context.add_error(
+            f"Column {col.name} is denied. Column should be removed from SELECT clause",
+            True,
+            0.3,
+        )
+        return False
     if (
         col.table == "sub_select"
         or (col.table != "" and col.table in context.dynamic_tables)
