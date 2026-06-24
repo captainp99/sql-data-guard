@@ -24,11 +24,13 @@
 - [Installation](#installation)
 - [Usage and examples](#usage-and-examples)
 - [Configuration](#configuration)
+- [Policy and security controls](#policy-and-security-controls)
 - [REST API reference](#rest-api-reference)
 - [MCP wrapper](#mcp-wrapper)
 - [Dify plugin](#dify-plugin)
 - [Project structure](#project-structure)
 - [Development and contributing](#development-and-contributing)
+- [AI-assisted development](#ai-assisted-development)
 - [Testing](#testing)
 - [Deployment and release](#deployment-and-release)
 - [Security](#security)
@@ -57,12 +59,23 @@
 
 ## Key features
 
+**Access and query control**
 - **Verify** any SQL query against an allow-list of tables, columns, and restrictions.
 - **Rewrite** non-compliant queries automatically into a safe, allowed form.
-- **Detect and strip** malicious payloads and always-true (`1 = 1`) injection expressions.
-- **Block** disallowed statements (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, DDL/commands).
 - **Enforce row-level security** by injecting missing restrictions (e.g. `account_id = 123`).
-- **Score risk** for every query (`0.0` = safe → `1.0` = high risk).
+- **Deny columns** explicitly (`denied_columns`) even when otherwise allowed, and expand `SELECT *` to the allow-list.
+- **Cap result rows** with `force_limit` — inject or clamp the outermost `LIMIT`.
+
+**Data protection**
+- **Mask sensitive columns** (`redact`, `hash`, `partial`) instead of dropping them, preserving the result shape for downstream apps.
+
+**Threat detection**
+- **Detect injection** — stacked statements, dangerous functions, system-catalog probing, and always-true (`1 = 1`) expressions; opt-in comment-evasion scanning.
+- **Allow/Block SQL functions** by policy (`allowed_functions` / `blocked_functions`).
+- **Block** disallowed statements (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, DDL/commands).
+- **Score risk** for every query (`0.0` → `1.0`) and **hard-block** above an optional `max_risk` threshold.
+
+**Integration**
 - **Integrate anywhere** — Python API, REST service with Swagger UI, MCP wrapper, or Dify plugin.
 - **Multi-dialect** parsing via [sqlglot](https://github.com/tobymao/sqlglot) (SQLite, PostgreSQL, and more).
 
@@ -70,11 +83,12 @@
 
 ## How it works
 
-1. **Input** — a SQL query string plus a restriction configuration (allowed tables, columns, restrictions).
-2. **Validation** — the configuration itself is validated (supported operations, well-formed restrictions).
-3. **Verification** — the query is parsed and checked against the configuration: disallowed statements, unknown tables/columns, `SELECT *`, static/always-true expressions, and missing row restrictions.
-4. **Modification** — where possible, the query is rewritten to comply (remove disallowed columns, expand `*`, drop injection expressions, append required restrictions).
-5. **Output** — a result object with `allowed`, `errors`, `fixed`, and `risk`.
+1. **Input** — a SQL query string plus a restriction configuration (allowed tables, columns, restrictions, and optional policy controls).
+2. **Validation** — the configuration itself is validated (supported operations, well-formed restrictions and column masks).
+3. **Threat scan** — the raw string and parsed AST are scanned for injection patterns (stacked statements, dangerous functions, system-catalog probing, opt-in comment evasion).
+4. **Verification** — the query is checked against the configuration: disallowed statements, unknown tables/columns, denied columns, `SELECT *`, static/always-true expressions, function policy, and missing row restrictions.
+5. **Modification** — where possible, the query is rewritten to comply: remove denied/disallowed columns, expand `*`, mask sensitive columns, drop injection expressions, append required restrictions, and enforce the row cap.
+6. **Output** — a result object with `allowed`, `errors`, `fixed`, and `risk`.
 
 ---
 
@@ -86,9 +100,10 @@
 flowchart LR
     App["Application / LLM"] -->|"SQL + config"| Guard
     subgraph Guard["sql-data-guard"]
-        V["validate_restrictions"] --> P["sqlglot parse"]
-        P --> C["verify_restrictions<br/>(tables, columns, rows,<br/>static expressions)"]
-        C --> R["rewrite / fix"]
+        V["validate config<br/>(restrictions, masks)"] --> S["scan raw + AST<br/>(injection detection)"]
+        S --> P["sqlglot parse"]
+        P --> C["verify<br/>(tables, columns, rows,<br/>functions, denials)"]
+        C --> R["rewrite / mask / limit"]
     end
     Guard -->|"allowed? errors, fixed, risk"| App
     App -->|"only compliant SQL"| DB[(Database)]
@@ -237,6 +252,72 @@ Validation errors are raised for unsupported operations (`UnsupportedRestriction
 
 ---
 
+## Policy and security controls
+
+Beyond table/column allow-listing, `sql-data-guard` offers a set of **optional, declarative policy controls**. Everything except `tables` is optional, so existing configurations keep working unchanged.
+
+### Top-level keys
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `tables` | list | — (required) | Allowed tables and their `columns`, `restrictions`, etc. |
+| `max_length` | int | `10000` | Reject SQL longer than this many characters. |
+| `force_limit` | int | — | Inject or clamp the outermost `LIMIT` to this row cap. |
+| `allowed_functions` | list[str] | — | If set, **only** these functions may be called (case-insensitive). |
+| `blocked_functions` | list[str] | — | These functions are always blocked (case-insensitive). |
+| `detect_comments` | bool | `false` | Opt-in: flag comment-based evasion (`--`, `/* */`, `#`). Also via `detect_injection.comments`. |
+| `max_risk` | float | — | Hard-block (no auto-fix) when a query's risk exceeds this threshold. |
+
+### Per-table keys
+
+| Key | Type | Effect |
+|---|---|---|
+| `columns` | list[str] | Allow-list of selectable columns. |
+| `restrictions` | list | Row filters (see operations above). |
+| `denied_columns` | list[str] | Columns excluded from results even if present in `columns`. |
+| `column_masks` | list | Column-masking rules (below). |
+
+### Column masking (`column_masks`)
+
+Masking rewrites a sensitive column into a masking expression instead of removing it — the query keeps returning a column with the same output name.
+
+| Policy | Behavior | Options |
+|---|---|---|
+| `redact` | Replace the value with a constant | `replacement` (default `****`) |
+| `hash` | Replace with a one-way `MD5(col)` | — |
+| `partial` | Keep the last N characters, mask the rest | `show_last` (default `4`) |
+
+### Always-on threat detection
+
+No configuration is required for these — they have no legitimate use in an application query:
+
+- **Stacked-statement rejection** (`a; b`).
+- **Dangerous-function deny-list** — e.g. `xp_cmdshell`, `load_file`, `pg_read_file`, `pg_sleep`, `benchmark`, `waitfor`, `sys_exec`.
+- **System-catalog probing** — e.g. `information_schema`, `sqlite_master`, `pg_catalog`.
+
+### Example combining several controls
+
+```json
+{
+  "force_limit": 1000,
+  "blocked_functions": ["pg_sleep", "load_file"],
+  "max_risk": 0.8,
+  "tables": [
+    {
+      "table_name": "users",
+      "columns": ["id", "email", "ssn", "tenant_id"],
+      "denied_columns": ["ssn"],
+      "column_masks": [
+        { "column": "email", "policy": "hash" }
+      ],
+      "restrictions": [{ "column": "tenant_id", "value": 42 }]
+    }
+  ]
+}
+```
+
+---
+
 ## REST API reference
 
 A Flask service exposes `verify_sql` over HTTP, with an interactive Swagger UI powered by [flasgger](https://github.com/flasgger/flasgger).
@@ -318,6 +399,8 @@ A [Dify](https://dify.ai/) plugin wraps `sql-data-guard` so LLM workflows can va
 │   ├── sql_data_guard.py      # verify_sql — entry point and query verification
 │   ├── restriction_validation.py    # Config/restriction validation
 │   ├── restriction_verification.py  # Row/column restriction enforcement
+│   ├── column_masking.py            # Column masking (redact / hash / partial)
+│   ├── injection_detection.py       # Malicious-payload / injection scanning
 │   ├── verification_context.py      # Shared verification state, risk, errors
 │   ├── verification_utils.py        # sqlglot expression helpers
 │   ├── rest/                  # Flask REST API + Swagger UI
@@ -335,7 +418,7 @@ A [Dify](https://dify.ai/) plugin wraps `sql-data-guard` so LLM workflows can va
 
 ## Development and contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). New here? Start with the [ONBOARDING.md](ONBOARDING.md) guide.
 
 Local setup:
 
@@ -347,6 +430,15 @@ pip install -r test/test.requirements.txt
 ```
 
 Workflow: fork → branch → change → add tests → open a pull request. Every PR must follow the coding style, include tests, pass the full suite, and update docs when behavior changes.
+
+---
+
+## AI-assisted development
+
+This project is developed with AI coding assistants under explicit, version-controlled guardrails kept in the repo:
+
+- **Reusable skills** in [.agents/skills/](.agents/skills/) encode repeatable engineering tasks — e.g. `architecture-discovery`, `security-test-generator`, `sql-injection-researcher`, `benchmark-suite-builder`, `documentation-engineer`, and `refactoring-advisor`.
+- **Assistant rules and workflows** in [.clinerules/](.clinerules/) — a security rule and a technical-documentation workflow that constrain how AI assistants operate on this codebase.
 
 ---
 
@@ -365,7 +457,7 @@ set PYTHONPATH=src
 python -m pytest --color=yes test/*_unit.py
 ```
 
-The suite covers core verification, validation, joins, updates, the REST API, and DuckDB integration; a separate LLM test ([test/test_sql_guard_llm.py](test/test_sql_guard_llm.py)) runs in its own CI workflow. Unit tests also run automatically on every push.
+The suite spans **13 unit test files** covering core verification, validation, joins, updates, the REST API, and DuckDB integration, plus dedicated suites for the security features: `test_column_masking_unit.py`, `test_denied_columns_unit.py`, `test_function_policy_unit.py`, `test_injection_detection_unit.py`, `test_limit_enforcement_unit.py`, and `test_security_fixes_unit.py`. A separate LLM test ([test/test_sql_guard_llm.py](test/test_sql_guard_llm.py)) runs in its own CI workflow. Unit tests also run automatically on every push.
 
 ---
 
