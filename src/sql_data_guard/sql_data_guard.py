@@ -51,16 +51,25 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
     # First, validate restrictions
     try:
         validate_restrictions(config)
-    except UnsupportedRestrictionError as e:
+    except (UnsupportedRestrictionError, ValueError) as e:
         return {"allowed": False, "errors": [str(e)], "fixed": None, "risk": 1.0}
 
     result = VerificationContext(config, dialect)
+    parsed = None
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        statements = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
     except sqlglot.errors.ParseError as e:
         logging.error(f"SQL: {sql}\nError parsing SQL: {e}")
         result.add_error(f"Error parsing sql: {e}", False, 0.9)
-        parsed = None
+        statements = []
+    if len(statements) > 1:
+        # Reject stacked / multi-statement payloads explicitly rather than relying on
+        # sqlglot incidentally wrapping them in a non-query node (S7).
+        result.add_error("Multiple SQL statements are not allowed", False, 0.9)
+    elif len(statements) == 1:
+        parsed = statements[0]
+    elif len(result.errors) == 0:
+        result.add_error("Could not find a query statement", False, 0.7)
     if parsed:
         if isinstance(parsed, expr.Command):
             result.add_error(f"{parsed.name} statement is not allowed", False, 0.9)
@@ -72,12 +81,20 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
             _verify_query_statement(parsed, result)
         else:
             result.add_error("Could not find a query statement", False, 0.7)
-    if result.can_fix and len(result.errors) > 0:
+    if result.can_fix and parsed is not None and len(result.errors) > 0:
         result.fixed = parsed.sql(dialect=dialect)
+
+    allowed = len(result.errors) == 0
+    fixed = result.fixed
+    max_risk = config.get("max_risk")
+    if max_risk is not None and result.risk > max_risk:
+        # Risk exceeds the configured threshold: refuse to auto-fix and hard-block (S5).
+        allowed = False
+        fixed = None
     return {
-        "allowed": len(result.errors) == 0,
+        "allowed": allowed,
         "errors": result.errors,
-        "fixed": result.fixed,
+        "fixed": fixed,
         "risk": result.risk,
     }
 
@@ -138,13 +155,17 @@ def _has_static_expression(context: VerificationContext, exp: expr.Expression) -
 
 
 def _verify_query_statement(query_statement: expr.Query, context: VerificationContext):
-    if isinstance(query_statement, expr.Union):
+    if isinstance(query_statement, expr.SetOperation):
+        # Covers UNION, EXCEPT and INTERSECT (all share the SetOperation base).
         _verify_query_statement(query_statement.left, context)
         _verify_query_statement(query_statement.right, context)
         return
     for cte in query_statement.ctes:
+        # Register early so recursive/forward CTE references resolve, then refresh
+        # after verification to capture columns expanded from SELECT * (S3).
         _add_table_alias(cte, context)
         _verify_query_statement(cte.this, context)
+        _add_table_alias(cte, context)
     from_tables = _verify_from_tables(context, query_statement)
     if context.can_fix:
         _verify_select_clause(context, query_statement, from_tables)
@@ -237,12 +258,22 @@ def _verify_col(
     if (
         col.table == "sub_select"
         or (col.table != "" and col.table in context.dynamic_tables)
-        or (all(t.name in context.dynamic_tables for t in from_tables))
+        or (
+            # All FROM tables are dynamic: allow only columns those dynamic tables
+            # actually expose, instead of blindly allowing everything (S3).
+            len(from_tables) > 0
+            and all(t.name in context.dynamic_tables for t in from_tables)
+            and any(
+                col.name in context.dynamic_tables.get(t.name, set())
+                for t in from_tables
+            )
+        )
         or (
             col.table == ""
             and col.name
-            in [col for t_cols in context.dynamic_tables.values() for col in t_cols]
+            in [c for t_cols in context.dynamic_tables.values() for c in t_cols]
         )
+        or (col.table == "" and col.name in context.dynamic_columns)
         or (
             any(
                 col.name in config_t["columns"]
@@ -284,8 +315,11 @@ def _get_from_clause_tables(
                 if isinstance(t, expr.Table):
                     result.append(t)
             for l in find_direct(clause, expr.Subquery):
-                _add_table_alias(l, context)
+                # Verify (and expand SELECT *) before recording exposed columns so
+                # that the alias maps to the real, allowed columns rather than "*".
                 _verify_query_statement(l.this, context)
+                _add_table_alias(l, context)
+                _register_dynamic_columns(l.this, context)
     for join_clause in join_clauses:
         for l in find_direct(join_clause, expr.Lateral):
             _add_table_alias(l, context)
@@ -303,3 +337,15 @@ def _add_table_alias(exp: expr.Expression, context: VerificationContext):
             else:
                 column_names = {c for c in exp.this.named_selects}
             context.dynamic_tables[table_alias.alias_or_name] = column_names
+
+
+def _register_dynamic_columns(query: expr.Expression, context: VerificationContext):
+    """
+    Record the columns a (possibly un-aliased) dynamic source exposes, so the outer
+    query may reference them un-prefixed without blindly allowing every column.
+    """
+    if query is None:
+        return
+    for name in query.named_selects:
+        if name and name != "*":
+            context.dynamic_columns.add(name)
