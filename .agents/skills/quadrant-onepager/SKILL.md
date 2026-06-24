@@ -1,8 +1,10 @@
 # SKILL.md — 4-Quadrant One-Pager Slide Generator
 
-A reusable specification for producing a **single, presentation-ready 4-quadrant one-pager**
-that matches the **A4I Hackathon** dark template. Drop this in a repo and any human or AI
-assistant can generate a crisp, demo-grade slide that summarizes a project on one page.
+A reusable, **repo-agnostic** specification for producing a **single, presentation-ready
+4-quadrant one-pager** that matches the **A4I Hackathon** dark template. Drop this in *any*
+repo — any language, any stack — and a human or AI assistant can generate a crisp, demo-grade
+slide that summarizes the project on one page. It works from **optional user answers** (§4),
+falling back to **repo-derived content** (§5) for anything left unanswered.
 
 > Written from the perspective of a senior presentation designer: the slide must read in
 > **15 seconds**, survive a projector, and look intentional — not auto-generated.
@@ -84,33 +86,70 @@ title ~26px bold centered; body ~18px. **Canvas:** 1280×720 (16:9), scalable to
 
 ---
 
-## 4. Content-gathering playbook (do this BEFORE writing the slide)
+## 4. Intake questions (ask the user — ALL OPTIONAL)
 
-Garbage in, garbage slide. Mine the source material first, then write.
+Before generating, ask the user the questions below **once** (a single batched prompt — e.g.
+`AskUserQuestion` — not one at a time). Make it explicit that **every answer is optional**:
 
-1. **Read the repo signal**, in this order: `README.md`, `ONBOARDING.md`, `docs/`,
-   `pyproject.toml` / manifest, `test/` (count tests, coverage), CI workflows, recent
-   `git log`. For a hackathon, also read any submission notes.
+> *"Answer any of these to steer the slide. Skip any — or all — and I'll derive that content
+> from the repo's code, docs, tests, and git history."*
+
+**Golden rule of precedence:** for each field, **use the user's answer if given; otherwise
+auto-derive it from the repo (§5); otherwise mark `[TODO: confirm]`.** Never block on an
+unanswered question — a skipped answer is a signal to fall back, not to stop.
+
+| Field | Question to ask | Maps to | If skipped → fallback |
+|---|---|---|---|
+| **Deck title** | "Slide title?" | Header | Repo / project name |
+| **Subtitle** | "Subtitle or event name? (e.g. a hackathon)" | Header | "4-quadrant one-pager" |
+| **Problem** | "What problem does this solve, and who does it hurt?" | ① | Infer from README / docs |
+| **AI assistant(s)** | "Which AI coding assistant(s) did you use?" | ② | Infer from repo (skills dir, CI, commit co-authors) or omit |
+| **How AI was used** | "How did you use it — key prompts, features, workflows?" | ② | Infer from skills / config / commit history or omit |
+| **Skills / framework / tools** | "Which skills, frameworks, or tools? (e.g. MCP, SpecKit, BMAD)" | ② | Infer from `.agents`/`.claude`, manifests, deps |
+| **Best practices** | "Engineering practices to highlight? (tests-first, CI, reviews)" | ② | Infer from `test/`, CI workflows, PR setup |
+| **Metrics** | "Any numbers to feature? (coverage %, tests, time saved)" | ③ | Count from repo (test files, integrations); never invent |
+| **Use cases** | "Key use cases / features delivered?" | ③ | Infer from README features + code structure |
+| **Business value** | "Business value — who benefits, risk/$$ avoided?" | ④ | Infer cautiously from README "why" section |
+| **Next steps** | "Next steps for scaling?" | ④ | Infer from roadmap / TODO / open issues, else `[TODO: confirm]` |
+| **Output format** | "HTML (best fidelity) or editable PPTX?" | — | Default HTML (Method A) |
+
+> The **only** quadrant that is hard to fully auto-derive is **② Hypothesis** (it's about
+> *how the humans worked with AI*). If the user skips everything, still produce a complete
+> slide from the repo, and clearly flag any ② bullets that are inferred or `[TODO: confirm]`.
+
+---
+
+## 5. Content-gathering playbook (the repo-derived fallback)
+
+For every field the user did **not** answer, mine the source material — then write.
+
+1. **Read the repo signal**, in this order: `README.md`, `ONBOARDING.md`/onboarding docs,
+   `docs/`, build/manifest files (`pyproject.toml`, `package.json`, `pom.xml`, `go.mod`, …),
+   `test/` (count tests, coverage), CI workflows (`.github/workflows`), agent/skill configs
+   (`.agents/`, `.claude/`), and recent `git log` (including co-authors → AI assistants). For a
+   hackathon, also read any submission notes.
 2. **Extract evidence for each quadrant** — pull *concrete, quantified* facts, not adjectives:
-   - ① the named problem + who it hurts (regulations, breach risk, $$).
-   - ② the actual AI tools/skills/frameworks used (be specific — Claude Code, skills, MCP, SpecKit/BMAD if used), prompts/workflows, engineering practices (tests-first, CI, code review).
-   - ③ shipped features + numbers (N test files, X% coverage, dialects supported, integrations).
+   - ① the named problem + who it hurts (regulations, risk, cost).
+   - ② AI tools/skills/frameworks evidenced in the repo, plus engineering practices (tests, CI, reviews).
+   - ③ shipped features + numbers (N test files, X% coverage, integrations, supported targets).
    - ④ business value, what's reusable, the next scaling step.
-3. **If a fact isn't in the source, don't invent it.** Mark it `[TODO: confirm]` and tell
-   the user what's missing rather than fabricating metrics.
+3. **If a fact isn't in the source and the user didn't supply it, don't invent it.** Mark it
+   `[TODO: confirm]` and tell the user what's missing rather than fabricating metrics.
+4. **Merge, don't duplicate:** when the user gives a partial answer, blend it with repo
+   evidence (e.g. user says "we used Claude Code" → you add the specific skills you found).
 
 ### Writing principles (presentation-grade)
 
 - **≤ 5 bullets per quadrant**, **≤ 10 words per bullet**. If it wraps to 3 lines, cut it.
 - **Verb-first, present tense.** "Blocks injection" > "The system is able to block injections."
-- **Quantify** wherever possible ("9 test suites", "0 runtime deps beyond sqlglot").
+- **Quantify** wherever possible ("9 test suites", "3 integrations", "1 runtime dependency").
 - **No paragraphs, no sub-bullets.** One idea per line.
 - **Parallel structure** within a quadrant (all bullets start the same grammatical way).
 - Lead each quadrant with its strongest point — people read the first bullet, skim the rest.
 
 ---
 
-## 5. Output method A — self-contained HTML (PRIMARY, pixel-faithful)
+## 6. Output method A — self-contained HTML (PRIMARY, pixel-faithful)
 
 Highest fidelity to the template and trivial to preview/export. Produce **one `.html` file**.
 Replace the `{{PLACEHOLDERS}}`; keep one `<li>` per bullet; delete unused `<li>`s.
@@ -206,7 +245,7 @@ Replace the `{{PLACEHOLDERS}}`; keep one `<li>` per bullet; delete unused `<li>`
 
 ---
 
-## 6. Output method B — editable PPTX (python-pptx)
+## 7. Output method B — editable PPTX (python-pptx)
 
 Use when the client needs to edit text in PowerPoint. Requires `pip install python-pptx`.
 Fill the `CONTENT` dict; run the script; it writes `one-pager.pptx`.
@@ -278,18 +317,25 @@ print("✅ wrote one-pager.pptx")
 
 ---
 
-## 7. Choosing & invoking
+## 8. End-to-end flow (how to run the skill)
 
-1. Confirm the **deck title / subtitle** (default: project name + "4-quadrant one-pager").
-2. Run the **content-gathering playbook** (§4) against the repo / work.
-3. Draft bullets, enforce the **≤5 / ≤10-word** limits (§4).
-4. Pick output **A (HTML)** for fidelity or **B (PPTX)** for editability — ask if unsure.
-5. Generate the file, then **export to PNG/PDF** and show the user.
-6. Surface any `[TODO: confirm]` gaps you couldn't source.
+1. **Ask the intake questions** (§4) in one batched, clearly-optional prompt.
+2. **Mine the repo** (§5) for every field the user left blank; merge partial answers with
+   repo evidence rather than overwriting them.
+3. **Draft bullets**, enforcing the **≤5 / ≤10-word**, verb-first limits (§5 writing principles).
+4. **Pick output** — Method A (HTML, §6) for fidelity or Method B (PPTX, §7) for editability;
+   use the user's `Output format` answer, else default to HTML.
+5. **Generate the file**, then **export to PNG/PDF** (§6) and show the user the result.
+6. **Surface gaps** — list any bullets that were inferred or marked `[TODO: confirm]` so the
+   user can correct them.
+
+> Works with **zero answers**: skip step 1's responses and the skill still produces a complete,
+> repo-derived slide. Works with **full answers**: the user's content takes precedence. Most
+> runs are a mix — that's the intended mode.
 
 ---
 
-## 8. Validation checklist
+## 9. Validation checklist
 
 - [ ] Exactly four quadrants, titles match the template (or agreed rename).
 - [ ] **Value & Impact** carries the hero (bright) border.
