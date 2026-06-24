@@ -22,6 +22,29 @@ def validate_restrictions(config: dict):
         "BETWEEN",
         "IN",
     ]  # Allowed operations
+    # Validate the optional mandatory-row-cap option (feature F3).
+    if "force_limit" in config:
+        force_limit = config["force_limit"]
+        if (
+            not isinstance(force_limit, int)
+            or isinstance(force_limit, bool)
+            or force_limit <= 0
+        ):
+            raise UnsupportedRestrictionError(
+                f"Invalid 'force_limit': expected a positive integer. Received: {force_limit}"
+            )
+
+    # Validate the optional function allow-list / deny-list (feature F2).
+    for key in ("allowed_functions", "blocked_functions"):
+        if key in config:
+            value = config[key]
+            if not isinstance(value, list) or not all(
+                isinstance(v, str) for v in value
+            ):
+                raise UnsupportedRestrictionError(
+                    f"Invalid '{key}': expected a list of function-name strings. Received: {value}"
+                )
+
     # Ensure 'tables' exists in config and is not empty
     tables = config.get("tables", [])
     # Check if tables are empty
@@ -37,6 +60,17 @@ def validate_restrictions(config: dict):
             raise ValueError(
                 "Each table must have a 'columns' key with valid column definitions."
             )
+
+        # Validate the optional negative (deny-list) column rules (feature F10).
+        if "denied_columns" in table:
+            denied = table["denied_columns"]
+            if not isinstance(denied, list) or not all(
+                isinstance(c, str) for c in denied
+            ):
+                raise UnsupportedRestrictionError(
+                    f"Invalid 'denied_columns' for table '{table['table_name']}': "
+                    f"expected a list of column-name strings. Received: {denied}"
+                )
 
         restrictions = table.get("restrictions", [])
         if not restrictions:
