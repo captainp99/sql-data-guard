@@ -21,6 +21,16 @@ swagger = Swagger(
     },
 )
 
+# Optional API-key authentication (S6). Disabled unless SQL_GUARD_API_KEY is set,
+# preserving the default open behavior for local/dev use.
+_API_KEY = os.environ.get("SQL_GUARD_API_KEY")
+
+
+@app.before_request
+def _require_api_key():
+    if _API_KEY and request.headers.get("X-API-Key") != _API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
 
 @app.route("/verify-sql", methods=["POST"])
 def _verify_sql():

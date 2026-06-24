@@ -68,7 +68,7 @@ class TestStackedQueries:
             "SELECT id FROM orders WHERE account_id = 123", _config(), "sqlite"
         )
         assert result["allowed"] is True
-        assert result["errors"] == set()
+        assert result["errors"] == []
 
 
 class TestDangerousFunctions:

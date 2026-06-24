@@ -59,7 +59,7 @@ class TestBlockedFunctions:
             "SELECT COUNT(id) FROM orders", _config(blocked=["UPPER"]), "sqlite"
         )
         assert result["allowed"] is True
-        assert result["errors"] == set()
+        assert result["errors"] == []
 
 
 class TestAllowedFunctions:

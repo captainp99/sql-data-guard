@@ -48,7 +48,7 @@ class TestForceLimitInjection:
         )
         assert result["allowed"] is True
         assert result["fixed"] is None
-        assert result["errors"] == set()
+        assert result["errors"] == []
 
     def test_limit_equal_to_cap_is_allowed(self):
         result = verify_sql(
