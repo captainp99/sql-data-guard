@@ -124,6 +124,42 @@ curl -X POST http://localhost:5000/verify-sql \
          }'
 ```
 
+## Testing with Swagger UI
+
+The REST API ships with an interactive Swagger UI (powered by [flasgger](https://github.com/flasgger/flasgger)), which lets you explore and test the `/verify-sql` endpoint from your browser.
+
+To run the REST API locally:
+
+```bash
+pip install flask flasgger sql-data-guard
+# Run the server (set APP_PORT to use a port other than 5000)
+APP_PORT=5050 PYTHONPATH=src python src/sql_data_guard/rest/sql_data_guard_rest.py
+```
+
+On Windows (cmd):
+
+```bat
+set APP_PORT=5050
+set PYTHONPATH=src
+python src\sql_data_guard\rest\sql_data_guard_rest.py
+```
+
+Then open the Swagger UI in your browser:
+
+```
+http://localhost:5050/apidocs
+```
+
+Expand **POST /verify-sql**, click **Try it out**, adjust the pre-filled example request, and click **Execute** to see the verification result.
+
+> **Behind a corporate proxy?** If `localhost` requests return `503` / a Squid error page (the proxy is intercepting local traffic), bypass the proxy for local addresses. For the browser this usually means adding `localhost, 127.0.0.1` to the proxy *exceptions*. For `curl`, use `--noproxy "*"`, e.g.:
+> ```bash
+> curl --noproxy "*" -X POST http://127.0.0.1:5050/verify-sql \
+>      -H "Content-Type: application/json" \
+>      -d '{"sql":"SELECT id FROM orders WHERE account_id = 123","config":{"tables":[{"table_name":"orders","columns":["id","account_id"],"restrictions":[{"column":"account_id","value":123}]}]}}'
+> ```
+
+
 ## Contributing
 We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
 
