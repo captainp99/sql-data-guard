@@ -36,7 +36,10 @@ class TestS7MultiStatement:
             _orders_config(),
         )
         assert result["allowed"] is False
-        assert "Multiple SQL statements are not allowed" in result["errors"]
+        assert (
+            "Stacked query detected: multiple statements are not allowed"
+            in result["errors"]
+        )
         assert result["fixed"] is None
 
     def test_stacked_select_is_rejected(self):
@@ -45,7 +48,10 @@ class TestS7MultiStatement:
             _orders_config(),
         )
         assert result["allowed"] is False
-        assert "Multiple SQL statements are not allowed" in result["errors"]
+        assert (
+            "Stacked query detected: multiple statements are not allowed"
+            in result["errors"]
+        )
 
     def test_single_statement_with_trailing_semicolon_is_allowed(self):
         result = verify_sql(
