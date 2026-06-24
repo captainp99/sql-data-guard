@@ -46,7 +46,10 @@ def _verify_sql():
               example: SELECT * FROM orders WHERE account_id = 123
             config:
               type: object
-              description: The restriction configuration (allowed tables, columns and restrictions).
+              description: >-
+                The restriction configuration: allowed tables, columns,
+                row restrictions, and optional column_masks (redact | hash |
+                partial) that rewrite sensitive columns instead of dropping them.
               example:
                 tables:
                   - table_name: orders
@@ -54,9 +57,14 @@ def _verify_sql():
                       - id
                       - product_name
                       - account_id
+                      - credit_card
                     restrictions:
                       - column: account_id
                         value: 123
+                    column_masks:
+                      - column: credit_card
+                        policy: partial
+                        show_last: 4
             dialect:
               type: string
               description: Optional SQL dialect (e.g. "sqlite", "postgres").
