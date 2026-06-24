@@ -1,5 +1,7 @@
 from typing import Set, Dict, List, Optional
 
+from .column_masking import build_mask_lookup
+
 
 class VerificationContext:
     """
@@ -23,6 +25,8 @@ class VerificationContext:
         self._dynamic_tables: Dict[str, Set[str]] = {}
         self._dialect = dialect
         self._risk: List[float] = []
+        # {table_name: {column_name: mask_spec}}
+        self._column_masks: Dict[str, Dict[str, dict]] = build_mask_lookup(config)
 
     @property
     def can_fix(self) -> bool:
@@ -57,6 +61,10 @@ class VerificationContext:
     @property
     def dialect(self) -> str:
         return self._dialect
+
+    @property
+    def column_masks(self) -> Dict[str, Dict[str, dict]]:
+        return self._column_masks
 
     @property
     def risk(self) -> float:

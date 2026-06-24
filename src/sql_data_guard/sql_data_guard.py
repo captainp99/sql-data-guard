@@ -5,6 +5,7 @@ import sqlglot
 import sqlglot.expressions as expr
 from sqlglot.optimizer.simplify import simplify
 
+from .column_masking import build_mask_expression, validate_column_masks
 from .injection_detection import (
     function_name,
     is_stacked_statement,
@@ -55,10 +56,13 @@ def verify_sql(sql: str, config: dict, dialect: str = None) -> dict:
             "risk": 1.0,
         }
 
-    # First, validate restrictions
+    # First, validate restrictions and column masks
     try:
         validate_restrictions(config)
+        validate_column_masks(config)
     except UnsupportedRestrictionError as e:
+        return {"allowed": False, "errors": [str(e)], "fixed": None, "risk": 1.0}
+    except ValueError as e:
         return {"allowed": False, "errors": [str(e)], "fixed": None, "risk": 1.0}
 
     result = VerificationContext(config, dialect)
@@ -293,6 +297,7 @@ def _verify_select_clause_element(
     elif isinstance(e, expr.Column):
         if not _verify_col(e, from_tables, context):
             return False
+        _apply_column_mask(e, from_tables, context)
     elif isinstance(e, expr.Star):
         _expand_star(e, from_tables, context)
         return False
@@ -397,6 +402,42 @@ def _verify_col(
             0.3,
         )
         return False
+
+
+def _apply_column_mask(
+    col: expr.Column, from_tables: List[expr.Table], context: VerificationContext
+):
+    """Rewrite a SELECT column into its masking expression, if one is configured.
+
+    The column is only masked when it can be unambiguously attributed to a single
+    configured table that declares a mask for it. The rewrite preserves the output
+    column name, so the query shape is unchanged.
+    """
+    if not context.column_masks:
+        return
+
+    masked_tables = [
+        t
+        for t in from_tables
+        if t.name in context.column_masks and col.name in context.column_masks[t.name]
+    ]
+    if len(masked_tables) != 1:
+        # No mask for this column, or ambiguous across multiple masked tables.
+        return
+    table = masked_tables[0]
+
+    # If the column is table-qualified, it must refer to this table (by alias or name).
+    if col.table and col.table not in (table.alias, table.name):
+        return
+
+    mask = context.column_masks[table.name][col.name]
+    masked_expr = build_mask_expression(mask, col, context.dialect)
+    col.replace(masked_expr)
+    context.add_error(
+        f"Column {col.name} is masked ({mask['policy']})",
+        True,
+        0.2,
+    )
 
 
 def _get_from_clause_tables(
