@@ -1,47 +1,152 @@
+<h1 align="center">sql-data-guard</h1>
+<p align="center"><em>A safety layer that verifies and rewrites SQL queries before they touch your database — built for the LLM era.</em></p>
 
-# sql-data-guard: Safety Layer for LLM Database Interactions
+<p align="center">
+  <img alt="SQL Data Guard logo" src="sql-data-guard-logo.png" width="280"/>
+</p>
 
-<div style="text-align: center;">
-    <img alt="SQL Data Guard logo" src="sql-data-guard-logo.png" width="300"/>
-</div>
+<p align="center">
+  <a href="https://pypi.org/project/sql-data-guard/"><img alt="PyPI" src="https://img.shields.io/pypi/v/sql-data-guard.svg"></a>
+  <a href="https://pypi.org/project/sql-data-guard/"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/sql-data-guard.svg"></a>
+  <a href="https://github.com/ThalesGroup/sql-data-guard/pkgs/container/sql-data-guard"><img alt="Docker image" src="https://img.shields.io/badge/ghcr.io-sql--data--guard-blue?logo=docker"></a>
+  <a href="LICENSE.md"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
+</p>
 
-SQL is the go-to language for performing queries on databases, and for a good reason - it’s well known, easy to use and pretty simple. However, it seems that it’s as easy to use as it is to exploit, and SQL injection is still one of the most targeted vulnerabilities - especially nowadays with the proliferation of “natural language queries” harnessing Large Language Models (LLMs) power to generate and run SQL queries.
+---
 
+## Table of contents
 
-To help solve this problem, we developed sql-data-guard, an open-source project designed to verify that SQL queries access only the data they are allowed to. It takes a query and a restriction configuration, and returns whether the query is allowed to run or not. Additionally, it can modify the query to ensure it complies with the restrictions. sql-data-guard has also a built-in module for detection of malicious payloads, allowing it to report on and remove malicious expressions before query execution.
+- [Overview](#overview)
+- [Key features](#key-features)
+- [How it works](#how-it-works)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Usage and examples](#usage-and-examples)
+- [Configuration](#configuration)
+- [REST API reference](#rest-api-reference)
+- [MCP wrapper](#mcp-wrapper)
+- [Dify plugin](#dify-plugin)
+- [Project structure](#project-structure)
+- [Development and contributing](#development-and-contributing)
+- [Testing](#testing)
+- [Deployment and release](#deployment-and-release)
+- [Security](#security)
+- [FAQ and troubleshooting](#faq-and-troubleshooting)
+- [License](#license)
+- [Contact and support](#contact-and-support)
 
+---
 
-sql-data-guard is particularly useful when constructing SQL queries with LLMs, as such queries can’t run as prepared statements. Prepared statements secure a query’s structure, but LLM-generated queries are dynamic and lack this fixed form, increasing SQL injection risk. sql-data-guard mitigates this by inspecting and validating the query's content.
+## Overview
 
+**What.** `sql-data-guard` is an open-source Python library and service that inspects an SQL query against a declarative restriction configuration, decides whether the query is allowed to run, and — when it is not — rewrites it into a compliant form.
 
-By verifying and modifying queries before they are executed, sql-data-guard helps prevent unauthorized data access and accidental data exposure. Adding sql-data-guard to your application can prevent or minimize data breaches and the impact of SQL injection attacks, ensuring that only permitted data is accessed. 
+**Why.** SQL is easy to use and just as easy to exploit. SQL injection remains one of the most targeted vulnerabilities, and the problem is amplified by *natural-language-to-SQL* features built on Large Language Models (LLMs). Prepared statements secure a query's *structure*, but LLM-generated queries are dynamic and have no fixed form, so they cannot be parameterized — leaving the door open to accidental data exposure and injection. `sql-data-guard` closes that gap by validating the query's *content* before execution.
 
+**Who it is for.** Teams whose applications build SQL dynamically — especially with LLMs — and who need fine-grained, column-level and row-level access control that the database permission model cannot express. Typical cases:
 
-Connecting LLMs to SQL databases without strict controls can risk accidental data exposure, as models may generate SQL queries that access sensitive information. OWASP highlights cases of poor sandboxing leading to unauthorized disclosures, emphasizing the need for clear access controls and prompt validation. Businesses should adopt rigorous access restrictions, regular audits, and robust API security, especially to comply with privacy laws and regulations like GDPR and CCPA, which penalize unauthorized data exposure.
+- Applications that generate complex SQL queries.
+- Applications that use LLMs to author SQL, where full query control is impractical.
+- Per-user / per-role data access that must be correlated with fine-grained permissions.
+- Multi-tenant apps needing row-level isolation that database permissions can't enforce.
 
-## Why Use sql-data-guard?
+**Non-goals.** `sql-data-guard` does **not** replace the database permission model. It is an *additional* layer for the restrictions that are complex, vendor-specific, or otherwise impossible to express at the database level.
 
-Consider using sql-guard if your application constructs SQL queries, and you need to ensure that only permitted data is accessed. This is particularly beneficial if:
-- Your application generates complex SQL queries.
-- Your application employs LLM (Large Language Models) to create SQL queries, making it difficult to fully control the queries.
-- Different application users and roles should have different permissions, and you need to correlate an application user or role with fine-grained data access permission.
-- In multi-tenant applications, you need to ensure that each tenant can access only their data, which requires row-level security and often cannot be done using the database permissions model.
+---
 
-sql-guard does not replace the database permissions model. Instead, it adds an extra layer of security, which is crucial when implementing fine-grained, column-level, and row-level security is challenging or impossible. 
-Data restrictions are often complex and cannot be expressed by the database permissions model. For instance, you may need to restrict access to specific columns or rows based on intricate business logic, which many database implementations do not support. Instead of relying on the database to enforce these restrictions, sql-guard helps you overcome vendor-specific limitations by verifying and modifying queries before they are executed.
+## Key features
 
-## How It Works
+- **Verify** any SQL query against an allow-list of tables, columns, and restrictions.
+- **Rewrite** non-compliant queries automatically into a safe, allowed form.
+- **Detect and strip** malicious payloads and always-true (`1 = 1`) injection expressions.
+- **Block** disallowed statements (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, DDL/commands).
+- **Enforce row-level security** by injecting missing restrictions (e.g. `account_id = 123`).
+- **Score risk** for every query (`0.0` = safe → `1.0` = high risk).
+- **Integrate anywhere** — Python API, REST service with Swagger UI, MCP wrapper, or Dify plugin.
+- **Multi-dialect** parsing via [sqlglot](https://github.com/tobymao/sqlglot) (SQLite, PostgreSQL, and more).
 
-1. **Input**: sql-data-guard takes an SQL query and a restriction configuration as input.
-2. **Verification**: It verifies whether the query complies with the restrictions specified in the configuration.
-3. **Modification**: If the query does not comply, sql-data-guard can modify the query to ensure it meets the restrictions.
-4. **Output**: It returns whether the query is allowed to run or not, and if necessary, the modified query.
+---
 
-sql-data-guard is designed to be easy to integrate into your application. It provides a simple API that you can call to verify and modify SQL queries before they are executed. You can integrate it using REST API or directly in your application code. 
+## How it works
 
-## Example
+1. **Input** — a SQL query string plus a restriction configuration (allowed tables, columns, restrictions).
+2. **Validation** — the configuration itself is validated (supported operations, well-formed restrictions).
+3. **Verification** — the query is parsed and checked against the configuration: disallowed statements, unknown tables/columns, `SELECT *`, static/always-true expressions, and missing row restrictions.
+4. **Modification** — where possible, the query is rewritten to comply (remove disallowed columns, expand `*`, drop injection expressions, append required restrictions).
+5. **Output** — a result object with `allowed`, `errors`, `fixed`, and `risk`.
 
-Below you can find a Python snippet with allowed data access configuration, and usage of sql-data-guard. sql-data-guard finds a restricted column and an “always-true” possible injection and removes them both. It also adds a missing data restriction:
+---
+
+## Architecture
+
+*High-level flow — a query and a policy go in; an allow/deny decision and an optional rewritten query come out.*
+
+```mermaid
+flowchart LR
+    App["Application / LLM"] -->|"SQL + config"| Guard
+    subgraph Guard["sql-data-guard"]
+        V["validate_restrictions"] --> P["sqlglot parse"]
+        P --> C["verify_restrictions<br/>(tables, columns, rows,<br/>static expressions)"]
+        C --> R["rewrite / fix"]
+    end
+    Guard -->|"allowed? errors, fixed, risk"| App
+    App -->|"only compliant SQL"| DB[(Database)]
+```
+
+Integration surfaces, all sharing the same core `verify_sql`:
+
+| Surface | Module / location | Use when |
+|---|---|---|
+| Python library | [src/sql_data_guard/](src/sql_data_guard/) | Embedding directly in app code |
+| REST API (Flask + Swagger) | [src/sql_data_guard/rest/](src/sql_data_guard/rest/) | Language-agnostic / containerized use |
+| MCP wrapper | [src/sql_data_guard/mcpwrapper/](src/sql_data_guard/mcpwrapper/) | Guarding an MCP database server |
+| Dify plugin | [plugins/dify/](plugins/dify/) | Dify LLM workflows |
+
+---
+
+## Quick start
+
+```bash
+# Install
+pip install sql-data-guard
+```
+
+```python
+from sql_data_guard import verify_sql
+
+config = {"tables": [{"table_name": "orders", "columns": ["id"],
+                      "restrictions": [{"column": "account_id", "value": 123}]}]}
+
+print(verify_sql("SELECT id FROM orders WHERE account_id = 123", config))
+# {'allowed': True, 'errors': [], 'fixed': None, 'risk': 0.0}
+```
+
+---
+
+## Installation
+
+**Prerequisites:** Python ≥ 3.8. The only runtime dependency is [`sqlglot`](https://github.com/tobymao/sqlglot).
+
+| Method | Command |
+|---|---|
+| pip | `pip install sql-data-guard` |
+| Docker (REST API) | `docker run -d -p 5000:5000 ghcr.io/thalesgroup/sql-data-guard` |
+| From source | `git clone https://github.com/ThalesGroup/sql-data-guard.git && cd sql-data-guard && pip install -e .` |
+
+Verify the library import:
+
+```bash
+python -c "from sql_data_guard import verify_sql; print('ok')"
+```
+
+---
+
+## Usage and examples
+
+### Library
+
+The example below shows `sql-data-guard` finding a restricted column and an always-true injection, removing both, and injecting a missing row restriction:
 
 ```python
 from sql_data_guard import verify_sql
@@ -51,88 +156,102 @@ config = {
         {
             "table_name": "orders",
             "columns": ["id", "product_name", "account_id"],
-            "restrictions": [{"column": "account_id", "value": 123}]
+            "restrictions": [{"column": "account_id", "value": 123}],
         }
-    ] 
+    ]
 }
 
 query = "SELECT id, name FROM orders WHERE 1 = 1"
 result = verify_sql(query, config)
 print(result)
 ```
+
 Output:
+
 ```json
 {
-    "allowed": false,
-    "errors": ["Column name not allowed. Column removed from SELECT clause", 
-      "Always-True expression is not allowed", "Missing restriction for table: orders column: account_id value: 123"],
-    "fixed": "SELECT id, product_name, account_id FROM orders WHERE account_id = 123"
+  "allowed": false,
+  "errors": [
+    "Column name not allowed. Column removed from SELECT clause",
+    "Always-True expression is not allowed",
+    "Missing restriction for table: orders column: account_id value: 123"
+  ],
+  "fixed": "SELECT id, product_name, account_id FROM orders WHERE account_id = 123",
+  "risk": 0.7
 }
 ```
-For more details on restriction rules and validation, see the [manual.](docs/manual.md)
 
+`verify_sql(sql, config, dialect=None)` returns a dict with:
 
-Here is a table with more examples of SQL queries and their corresponding JSON outputs:
+| Field | Type | Description |
+|---|---|---|
+| `allowed` | bool | Whether the query passes all restrictions as-is. |
+| `errors` | list[str] | Human-readable violations found. |
+| `fixed` | str \| null | A rewritten compliant query, or `null` if no fix was needed/possible. |
+| `risk` | float | Risk score, `0.0` (safe) → `1.0` (high risk). |
 
-| SQL Query                                               | JSON Output                                                                                                                                                                         |
-|---------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| SELECT id, product_name FROM orders WHERE account_id = 123 | { "allowed": true, "errors": [], "fixed": null }                                                                                                                                    |
-| SELECT id FROM orders WHERE account_id = 456            | { "allowed": false, "errors": ["Missing restriction for table: orders column: account_id value: 123"], "fixed": "SELECT id FROM orders WHERE account_id = 456 AND account_id = 123" } |
-| SELECT id, col FROM orders WHERE account_id = 123      | { "allowed": false, "errors": ["Column col is not allowed. Column removed from SELECT clause"], "fixed": "SELECT id FROM orders WHERE account_id = 123" } ```               |
-| SELECT id FROM orders WHERE account_id = 123 OR 1 = 1 | { "allowed": false, "errors": ["Always-True expression is not allowed"], "fixed": "SELECT id FROM orders WHERE account_id = 123" }                                                  |
-|SELECT * FROM orders WHERE account_id = 123| {"allowed": false, "errors": ["SELECT * is not allowed"], "fixed": "SELECT id, product_name, account_id FROM orders WHERE account_id = 123"}                                |
+### More examples
 
-This table provides a variety of SQL queries and their corresponding JSON outputs, demonstrating how `sql-data-guard` handles different scenarios.
+| SQL query | Result (summary) |
+|---|---|
+| `SELECT id, product_name FROM orders WHERE account_id = 123` | `allowed: true`, no fix needed |
+| `SELECT id FROM orders WHERE account_id = 456` | `allowed: false` — appends `AND account_id = 123` |
+| `SELECT id, col FROM orders WHERE account_id = 123` | `allowed: false` — removes disallowed `col` |
+| `SELECT id FROM orders WHERE account_id = 123 OR 1 = 1` | `allowed: false` — strips always-true expression |
+| `SELECT * FROM orders WHERE account_id = 123` | `allowed: false` — expands `*` to allowed columns |
 
-## Installation
-To install sql-data-guard, use pip:
+See the [restriction manual](docs/manual.md) for the full set of rules and validation behavior.
 
-```bash
-pip install sql-data-guard
+---
+
+## Configuration
+
+The configuration is a dict with a top-level `tables` list. Each table declares its allowed `columns` and optional `restrictions`. A top-level `max_length` (default `10000`) caps the accepted SQL string length.
+
+```json
+{
+  "max_length": 10000,
+  "tables": [
+    {
+      "table_name": "orders",
+      "columns": ["id", "product_name", "account_id"],
+      "restrictions": [
+        { "column": "account_id", "value": 123 },
+        { "column": "price", "operation": "BETWEEN", "values": [100, 200] }
+      ]
+    }
+  ]
+}
 ```
 
-## Docker Repository
+### Restriction operations
 
-sql-data-guard is also available as a Docker image, which can be used to run the application in a containerized environment. This is particularly useful for deployment in cloud environments or for maintaining consistency across different development setups.
+| Operation | Field | Meaning |
+|---|---|---|
+| `=` (default) | `value` | Column must equal the value |
+| `>` `<` `>=` `<=` | `value` | Numeric comparison against a single value |
+| `BETWEEN` | `values` (two numbers, low < high) | Column within an inclusive range |
+| `IN` | `values` (list, consistent type) | Column matches one of the listed values |
 
-### Running the Docker Container
+Validation errors are raised for unsupported operations (`UnsupportedRestrictionError`), missing `table_name`/`columns`, and invalid value types. Full details in [docs/manual.md](docs/manual.md).
 
-To run the sql-data-guard Docker container, use the following command:
+---
+
+## REST API reference
+
+A Flask service exposes `verify_sql` over HTTP, with an interactive Swagger UI powered by [flasgger](https://github.com/flasgger/flasgger).
+
+### Run with Docker
 
 ```bash
 docker run -d --name sql-data-guard -p 5000:5000 ghcr.io/thalesgroup/sql-data-guard
 ```
 
-### Calling the Docker Container Using REST API
-
-Once the `sql-data-guard` Docker container is running, you can interact with it using its REST API. Below is an example of how to verify an SQL query using `curl`:
-
-```bash
-curl -X POST http://localhost:5000/verify-sql \
-     -H "Content-Type: application/json" \
-     -d '{
-           "sql": "SELECT * FROM orders WHERE account_id = 123",
-           "config": {
-             "tables": [
-               {
-                 "table_name": "orders",
-                 "columns": ["id", "product_name", "account_id"],
-                 "restrictions": [{"column": "account_id", "value": 123}]
-               }             
-            ]
-           }
-         }'
-```
-
-## Testing with Swagger UI
-
-The REST API ships with an interactive Swagger UI (powered by [flasgger](https://github.com/flasgger/flasgger)), which lets you explore and test the `/verify-sql` endpoint from your browser.
-
-To run the REST API locally:
+### Run from source
 
 ```bash
 pip install flask flasgger sql-data-guard
-# Run the server (set APP_PORT to use a port other than 5000)
+# APP_PORT defaults to 5000
 APP_PORT=5050 PYTHONPATH=src python src/sql_data_guard/rest/sql_data_guard_rest.py
 ```
 
@@ -144,24 +263,162 @@ set PYTHONPATH=src
 python src\sql_data_guard\rest\sql_data_guard_rest.py
 ```
 
-Then open the Swagger UI in your browser:
+### `POST /verify-sql`
 
+Request body (`application/json`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sql` | string | yes | The SQL query to verify. |
+| `config` | object | yes | The restriction configuration. |
+| `dialect` | string | no | SQL dialect (e.g. `sqlite`, `postgres`). |
+
+```bash
+curl -X POST http://localhost:5000/verify-sql \
+     -H "Content-Type: application/json" \
+     -d '{
+           "sql": "SELECT * FROM orders WHERE account_id = 123",
+           "config": {
+             "tables": [
+               { "table_name": "orders",
+                 "columns": ["id", "product_name", "account_id"],
+                 "restrictions": [{"column": "account_id", "value": 123}] }
+             ]
+           }
+         }'
 ```
-http://localhost:5050/apidocs
+
+The response mirrors the library result (`allowed`, `errors`, `fixed`, `risk`).
+
+### Swagger UI
+
+With the server running, open `http://localhost:5050/apidocs`, expand **POST /verify-sql**, click **Try it out**, edit the pre-filled example, and **Execute**.
+
+---
+
+## MCP wrapper
+
+The MCP wrapper transparently sits in front of an MCP database server: it intercepts `tools/call` requests, runs the SQL argument through `verify_sql`, and either rewrites the query or blocks it before it reaches the inner server. Configuration ([example](examples/mcp-wrapper-sqlite/config.json)) declares the inner `mcp-server` image, which `mcp-tools` carry SQL, and the `sql-data-guard` policy (including `dialect` and `inject-response`).
+
+Runnable examples live in [examples/mcp-wrapper-sqlite/](examples/mcp-wrapper-sqlite/) and [examples/mcp-wrapper-postgres/](examples/mcp-wrapper-postgres/). The wrapper image is built from [wrapper.Dockerfile](wrapper.Dockerfile).
+
+---
+
+## Dify plugin
+
+A [Dify](https://dify.ai/) plugin wraps `sql-data-guard` so LLM workflows can validate generated SQL inline. It accepts `sql`, `config`, and optional `dialect`, and returns `allowed`, `errors`, `fixed`, `verified_sql`, and `risk`. See [plugins/dify/README.md](plugins/dify/README.md) and [plugins/dify/DEV.md](plugins/dify/DEV.md).
+
+---
+
+## Project structure
+
+```text
+.
+├── src/sql_data_guard/        # Library source
+│   ├── sql_data_guard.py      # verify_sql — entry point and query verification
+│   ├── restriction_validation.py    # Config/restriction validation
+│   ├── restriction_verification.py  # Row/column restriction enforcement
+│   ├── verification_context.py      # Shared verification state, risk, errors
+│   ├── verification_utils.py        # sqlglot expression helpers
+│   ├── rest/                  # Flask REST API + Swagger UI
+│   └── mcpwrapper/            # MCP server guard wrapper
+├── plugins/dify/              # Dify LLM-workflow plugin
+├── examples/                  # MCP wrapper examples (SQLite, PostgreSQL)
+├── docs/manual.md             # Restriction schema and validation reference
+├── test/                      # Unit, REST, join, update, and LLM tests
+├── Dockerfile                 # REST API image
+├── wrapper.Dockerfile         # MCP wrapper image
+└── pyproject.toml             # Build config and metadata
 ```
 
-Expand **POST /verify-sql**, click **Try it out**, adjust the pre-filled example request, and click **Execute** to see the verification result.
+---
 
-> **Behind a corporate proxy?** If `localhost` requests return `503` / a Squid error page (the proxy is intercepting local traffic), bypass the proxy for local addresses. For the browser this usually means adding `localhost, 127.0.0.1` to the proxy *exceptions*. For `curl`, use `--noproxy "*"`, e.g.:
-> ```bash
-> curl --noproxy "*" -X POST http://127.0.0.1:5050/verify-sql \
->      -H "Content-Type: application/json" \
->      -d '{"sql":"SELECT id FROM orders WHERE account_id = 123","config":{"tables":[{"table_name":"orders","columns":["id","account_id"],"restrictions":[{"column":"account_id","value":123}]}]}}'
-> ```
+## Development and contributing
 
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-## Contributing
-We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
+Local setup:
+
+```bash
+git clone https://github.com/ThalesGroup/sql-data-guard.git
+cd sql-data-guard
+pip install -e .
+pip install -r test/test.requirements.txt
+```
+
+Workflow: fork → branch → change → add tests → open a pull request. Every PR must follow the coding style, include tests, pass the full suite, and update docs when behavior changes.
+
+---
+
+## Testing
+
+Tests use `pytest`. Run the unit suite from the repo root:
+
+```bash
+PYTHONPATH=src python -m pytest --color=yes test/*_unit.py
+```
+
+On Windows (cmd):
+
+```bat
+set PYTHONPATH=src
+python -m pytest --color=yes test/*_unit.py
+```
+
+The suite covers core verification, validation, joins, updates, the REST API, and DuckDB integration; a separate LLM test ([test/test_sql_guard_llm.py](test/test_sql_guard_llm.py)) runs in its own CI workflow. Unit tests also run automatically on every push.
+
+---
+
+## Deployment and release
+
+- **Versioning:** SemVer, managed via git tags.
+- **Release:** push a tag (e.g. `git tag -a v0.1.0 -m "Release 0.1.0" && git push --tags`). CI then publishes the package to **PyPI** and the Docker image to the **GitHub Container Registry** automatically.
+- **CI workflows** live in [.github/workflows/](.github/workflows/) — unit tests, Python compatibility, LLM tests, PyPI publish, REST/MCP Docker image builds, and Dify plugin publish.
+
+---
+
+## Security
+
+`sql-data-guard` is itself a defensive security control. Connecting LLMs to SQL databases without strict controls risks unauthorized disclosure (a pattern OWASP highlights) and can breach privacy regulations such as GDPR and CCPA. This project adds verification and query rewriting as a guardrail — but it complements, not replaces, database permissions, auditing, and API security.
+
+To report a vulnerability, contact **security@opensource.thalesgroup.com**. Never store credentials in source or config. See [SECURITY.md](SECURITY.md) for the full policy and supported versions.
+
+---
+
+## FAQ and troubleshooting
+
+### Does this replace my database's permission system?
+
+No. It is an additional, application-layer guardrail for restrictions that are complex, vendor-specific, or impossible to express in the database — especially row- and column-level rules.
+
+### Why not just use prepared statements?
+
+Prepared statements fix a query's *structure*. LLM-generated SQL is dynamic and has no fixed structure to parameterize, so `sql-data-guard` validates the query's *content* instead.
+
+### My local REST requests return 503 / a Squid error page.
+
+A corporate proxy is intercepting localhost traffic. Bypass the proxy for local addresses — add `localhost, 127.0.0.1` to the browser's proxy exceptions, or use `--noproxy "*"` with curl:
+
+```bash
+curl --noproxy "*" -X POST http://127.0.0.1:5050/verify-sql \
+     -H "Content-Type: application/json" \
+     -d '{"sql":"SELECT id FROM orders WHERE account_id = 123","config":{"tables":[{"table_name":"orders","columns":["id","account_id"],"restrictions":[{"column":"account_id","value":123}]}]}}'
+```
+
+### How do I change the REST API port?
+
+Set the `APP_PORT` environment variable before starting the server (default `5000`).
+
+---
 
 ## License
-This project is licensed under the MIT License. See the [LICENSE.md](LICENSE.md) file for details.
+
+Released under the [MIT License](LICENSE.md). Copyright © 2025 Imperva.
+
+---
+
+## Contact and support
+
+- **Issues & feature requests:** [GitHub Issues](https://github.com/ThalesGroup/sql-data-guard/issues)
+- **Security reports:** security@opensource.thalesgroup.com (never via public issues)
+- **Homepage:** https://github.com/ThalesGroup/sql-data-guard
